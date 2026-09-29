@@ -1,8 +1,9 @@
 # autokernel architecture
 
-Status: proposed 2026-09-29 from the design conversation. This document is the thing the
-code is supposed to match. Edit it when the design changes; do not let the code drift
-from it silently.
+Status: In Progess
+
+This document describes the intented structure of the
+project.
 
 ## Goal
 
@@ -15,7 +16,7 @@ history.
 Non-goals for now: training or fine-tuning models, multi-GPU, non-NVIDIA targets (kept
 possible in the interfaces, not built), a custom compute DSL.
 
-## The one rule
+## Rule
 
 The model produces text: kernel source and notes. It never runs commands, never sees a
 shell, never decides what gets measured. Every executable step is fixed system code
@@ -54,7 +55,7 @@ One spec file (YAML) plus CLI flag overrides. Fields:
   registers, shared memory, device memory, precision).
 - `budget`: tokens, wall time, iterations; whichever runs out first stops the search.
 - `feedback`: tier (see Feedback tiers).
-- `model`: provider and model id. API keys come from the environment, never the spec.
+- `model`: provider and model id. API keys come from the environment.
 
 The frontend produces a `Problem` object. Nothing downstream reads the YAML.
 
@@ -111,7 +112,7 @@ Later: `ptx` (driver API load), `cute_dsl`, `hip`.
 
 1. Inputs are generated fresh per attempt from a recorded seed. The model never sees
    values.
-2. Output buffers are poisoned with NaN before every launch.
+2. Output buffers are filled with NaN before every launch.
 3. Correctness is measured on one input set, timing on a different one.
 4. Reference outputs come from the PyTorch reference in the orchestrator process and
    are never available to the candidate process.
@@ -158,7 +159,7 @@ hash, protocol parameters. Errored attempts are recorded with `verified: false`.
 ## Milestones
 
 1. Greedy loop, `cuda_cpp` backend, fp32 GEMM, Anthropic provider, tier-1 feedback,
-   ledger and scratchpad. Runs end to end on the laptop.
+   ledger and scratchpad. Runs end to end on a laptop.
 2. `triton` backend on the same spec; the shared protocol lives in one place.
 3. Anti-cheat hardening and the sandbox; the known-cheat test suite.
 4. NVML sidecar and the ncu tier; `doctor`.
