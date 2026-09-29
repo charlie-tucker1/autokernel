@@ -1,0 +1,9 @@
+build/
+cmake-build-*/
+.idea/
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+runs/
+.env

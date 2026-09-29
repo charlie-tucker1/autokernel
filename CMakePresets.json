@@ -1,0 +1,31 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "laptop",
+      "displayName": "RTX 5070 Laptop (sm_120), conda gcc 15 host compiler",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CUDA_ARCHITECTURES": "120",
+        "CMAKE_CXX_COMPILER": "$env{HOME}/miniforge3/envs/cuda-gcc15/bin/x86_64-conda-linux-gnu-g++",
+        "CMAKE_CUDA_HOST_COMPILER": "$env{HOME}/miniforge3/envs/cuda-gcc15/bin/x86_64-conda-linux-gnu-g++"
+      }
+    },
+    {
+      "name": "h100",
+      "displayName": "H100 (sm_90), system compilers",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CUDA_ARCHITECTURES": "90"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "laptop", "configurePreset": "laptop" },
+    { "name": "h100", "configurePreset": "h100" }
+  ]
+}

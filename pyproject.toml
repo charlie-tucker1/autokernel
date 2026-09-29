@@ -1,0 +1,25 @@
+[project]
+name = "autokernel"
+version = "0.0.1"
+description = "LLM-driven search for fast, correct GPU kernels with an untrusting evaluator"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=0.40",
+    "pyyaml>=6",
+    "pydantic>=2",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+triton = ["torch", "triton"]
+dev = ["pytest"]
+
+[project.scripts]
+autokernel = "autokernel.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["autokernel*"]
