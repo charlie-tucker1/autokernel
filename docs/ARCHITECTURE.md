@@ -158,8 +158,9 @@ hash, protocol parameters. Errored attempts are recorded with `verified: false`.
 
 ## Milestones
 
-1. Greedy loop, `cuda_cpp` backend, fp32 GEMM, Anthropic provider, tier-1 feedback,
-   ledger and scratchpad. Runs end to end on a laptop.
+1. Done 2026-09-29. Greedy loop, `cuda_cpp` backend, fp32 GEMM, Anthropic provider,
+   tier-1 feedback, ledger and scratchpad. Runs end to end on a laptop (verified with
+   the mock provider; the Anthropic provider is wired but not yet exercised).
 2. `triton` backend on the same spec; the shared protocol lives in one place.
 3. Anti-cheat hardening and the sandbox; the known-cheat test suite.
 4. NVML sidecar and the ncu tier; `doctor`.
@@ -167,11 +168,51 @@ hash, protocol parameters. Errored attempts are recorded with `verified: false`.
 6. Second provider; budget and resume; a pandas notebook over ledgers.
 7. Population strategy; more ops (softmax, layernorm, attention pieces).
 
+## Decisions made in milestone 1
+
+Concrete choices the code now embodies. Change the doc first if you change them.
+
+- **Candidate ABI** (`harness/include/ak_kernel.h`): descriptor-based. The candidate
+  defines `extern "C" int ak_kernel(const ak_tensor* inputs, int32_t n_inputs,
+  ak_tensor* outputs, int32_t n_outputs, cudaStream_t stream)`. `ak_tensor` carries a
+  device pointer, dtype, ndim, shape and element strides. The harness never changes
+  per problem; the prompt spells out the concrete shapes. Nonzero return fails the
+  attempt. Optional `ak_abi_version()` is checked when present.
+- **Harness CLI**: `harness describe` prints device properties as JSON (via
+  `cudaDeviceGetAttribute`, since CUDA 13 dropped the clock fields from
+  `cudaDeviceProp`). `harness eval` takes the library, `--check-in/--check-out` and
+  `--time-in/--time-out` tensor files (.npy), warmup, trials and flush settings, and
+  writes a result JSON. Distinct exit codes: 2 load, 3 runtime, 4 file I/O.
+- **Protocol constants**: outputs are memset to 0xFF bytes (NaN for floats) before the
+  correctness launch, before each warmup and before each trial. L2 flush is a memset
+  of max(2 x L2, 32 MB) inside the trial loop, outside the timed region. Timing outputs
+  are downloaded after the last trial and verified like the correctness outputs.
+- **Seeds**: `base = protocol.seed * 1000003`; baseline inputs use `base`, attempt `i`
+  uses `base + 2i` for correctness and `base + 2i + 1` for timing. Recorded per attempt.
+- **Correctness metric**: per element `|out - ref| <= atol + rtol * |ref|`, computed in
+  float64. Feedback reports the max absolute error and the worst element's error as a
+  percentage of its tolerance (headroom), not a relative error, which is meaningless
+  near zero.
+- **Speedup convention**: `baseline_median / candidate_median`; above 1.0 is faster
+  than the baseline. Same for "versus best".
+- **Reply format**: `<hypothesis>` block, `<scratchpad>` block, then one fenced code
+  block with the whole file. The parser strips the two tagged sections before looking
+  for code, takes the longest block with a matching language tag, and records parsing
+  problems on the attempt. Each step is one fresh API call; all state is in the prompt.
+- **Run directory** (`runs/<run-id>/`): `problem.json`, `target.json`, `baseline.json`,
+  `ledger.jsonl`, `scratchpad.md`, `candidates/NNN.cu`, `prompts/NNN_prompt.md` and
+  `NNN_reply.md`, `attempts/NNN/` (build.log, run.log, result.json), `best.cu`,
+  `best.json`, `summary.json`. Tensor files are deleted after each evaluation unless
+  `protocol.keep_tensors` is set. A run resumes from its ledger and scratchpad.
+- **Baseline**: the PyTorch reference timed with the same warmup, trials and L2 flush,
+  once per run. For fp32 GEMM that is cuBLAS SGEMM.
+- **Providers**: `anthropic`, `openai` (any OpenAI-compatible endpoint, untested),
+  `mock` (a directory of reply files), `human` (prompt to a file, reply from a file).
+- **CLI**: `autokernel run|eval|prompt|describe|doctor`. `eval` runs one kernel file
+  through the full protocol with no model, which is the plain benchmarker use.
+
 ## Open questions
 
-- Descriptor-based entry point versus a problem-specific signature generated from the
-  spec. Descriptors keep the harness generic; a specific signature is easier for the
-  model to get right.
 - How much of the scratchpad the model may rewrite per step, and whether the system
   should append a locked "measured" line under each idea.
 - Whether precision is only a constraint, or a goal the model may trade within bounds.

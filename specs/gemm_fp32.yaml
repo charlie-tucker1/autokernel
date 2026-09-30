@@ -1,0 +1,43 @@
+# fp32 GEMM, the first problem. C[M,N] = A[M,K] @ B[K,N], row-major.
+computation:
+  name: gemm_fp32
+  description: Single-precision matrix multiply, C = A @ B, all row-major and contiguous.
+  reference: reference/gemm.py:gemm
+  inputs:
+    - {name: A, shape: [2048, 1024], dtype: float32, init: uniform, low: -1, high: 1}
+    - {name: B, shape: [1024, 1024], dtype: float32, init: uniform, low: -1, high: 1}
+  outputs:
+    - {name: C, shape: [2048, 1024], dtype: float32}
+  flops: 4294967296        # 2 * M * N * K
+
+precision:
+  tolerances:
+    - {output: C, atol: 1.0e-3, rtol: 1.0e-4}
+  allowed_reduced_precision: []
+  notes: Accumulate in fp32. TF32 or lower-precision tensor-core paths are not allowed for this problem.
+
+target:
+  language: cuda_cpp
+  device: 0
+
+goals:
+  objective: latency
+
+budget:
+  max_iterations: 10
+  max_tokens: 400000
+
+protocol:
+  warmup: 3
+  trials: 20
+  flush_l2: true
+  seed: 0
+
+feedback:
+  tier: 1
+  recent_attempts: 5
+
+model:
+  provider: anthropic
+  model: claude-sonnet-5
+  max_output_tokens: 16000
