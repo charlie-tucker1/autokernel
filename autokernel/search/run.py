@@ -8,13 +8,15 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import subprocess
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
 from ..backends import Backend, EvalCase
-from ..backends.protocol import TimingStats, time_torch
+from ..backends.protocol import TimingStats
 from ..providers.base import Provider, ProviderError
 from ..spec.problem import Problem
 from ..spec.reference import generate_inputs, load_reference, reference_source, run_reference
@@ -32,18 +34,36 @@ def seeds_for(problem: Problem, attempt_id: int) -> tuple[int, int]:
     return base + 2 * attempt_id, base + 2 * attempt_id + 1
 
 
+BASELINE_PROCESSES = 3
+BASELINE_ROUNDS = 2
+
+
 def compute_baseline(problem: Problem, backend: Backend, ref_fn, run_dir: Path) -> dict:
+    """Time the reference like a candidate in several fresh processes, several rounds
+    each, and keep the fastest round. cuBLAS via torch settles into one of two speeds
+    per process on the development laptop; the best is the honest bar to clear."""
     path = run_dir / "baseline.json"
     if path.is_file():
         return json.loads(path.read_text())
-    seed = problem.protocol.seed * 1_000_003
-    inputs = generate_inputs(problem, seed, backend.device)
-    args = [inputs[t.name] for t in problem.computation.inputs]
-    trials = time_torch(ref_fn, args, problem.protocol.warmup, problem.protocol.trials,
-                        backend.flush_bytes(), backend.device)
-    data = {"name": "PyTorch reference", "seed": seed, "trial_ms": trials,
-            "stats": TimingStats.from_trials(trials).to_dict()}
+    tmp = run_dir / "baseline_tmp"
+    tmp.mkdir(exist_ok=True)
+    (tmp / "problem.json").write_text(problem.model_dump_json())
+    warmup = max(problem.protocol.warmup, 10)
+    results = []
+    for i in range(BASELINE_PROCESSES):
+        out = tmp / f"p{i}.json"
+        cmd = [sys.executable, "-m", "autokernel.search.baseline", str(tmp / "problem.json"), str(out),
+               "--flush-bytes", str(backend.flush_bytes()), "--rounds", str(BASELINE_ROUNDS), "--warmup", str(warmup)]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+        if proc.returncode != 0 or not out.is_file():
+            raise RuntimeError(f"baseline measurement failed: {proc.stderr.strip()[-2000:]}")
+        results.append(json.loads(out.read_text()))
+    best = min(range(len(results)), key=lambda i: results[i]["stats"]["median_ms"])
+    data = {"name": f"PyTorch reference, best of {BASELINE_PROCESSES} processes x {BASELINE_ROUNDS} rounds",
+            "seed": results[best]["seed"], "trial_ms": results[best]["trial_ms"], "stats": results[best]["stats"],
+            "processes": [[r["median_ms"] for r in res["rounds"]] for res in results]}
     path.write_text(json.dumps(data, indent=2))
+    shutil.rmtree(tmp, ignore_errors=True)
     return data
 
 
@@ -94,6 +114,7 @@ def progress_line(a: Attempt, tokens: int) -> str:
 
 def run_search(problem: Problem, run_dir: Path, provider: Provider, backend: Backend,
                log: Log = print, strategy_name: str = "greedy") -> dict:
+    run_dir = Path(run_dir).resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
     run_id = run_dir.name
     (run_dir / "problem.json").write_text(problem.model_dump_json(indent=2, exclude={"spec_path"}))
@@ -162,6 +183,10 @@ def run_search(problem: Problem, run_dir: Path, provider: Provider, backend: Bac
         attempt.model = reply.model or provider.model
         tokens += reply.usage.total
         (run_dir / "prompts" / f"{next_id:03d}_reply.md").write_text(reply.text)
+        if reply.thinking:
+            (run_dir / "prompts" / f"{next_id:03d}_thinking.md").write_text(reply.thinking)
+        if reply.block_types:
+            attempt.usage["blocks"] = reply.block_types
 
         cand = parse_reply(reply.text, backend.code_fence)
         attempt.hypothesis = cand.hypothesis

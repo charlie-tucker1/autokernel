@@ -167,6 +167,7 @@ class CudaCppBackend:
     # ------------------------------------------------------------ build / run
 
     def build(self, source: str, workdir: Path) -> BuildResult:
+        workdir = Path(workdir).resolve()  # subprocesses run with cwd=workdir, so paths must be absolute
         workdir.mkdir(parents=True, exist_ok=True)
         src = workdir / "candidate.cu"
         so = workdir / "candidate.so"
@@ -189,6 +190,7 @@ class CudaCppBackend:
     def run(self, build: BuildResult, case: EvalCase, workdir: Path) -> EvalResult:
         p = self.problem.protocol
         comp = self.problem.computation
+        workdir = Path(workdir).resolve()
         tdir = workdir / "tensors"
         tdir.mkdir(parents=True, exist_ok=True)
         args: list[str] = []

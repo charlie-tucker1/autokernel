@@ -204,8 +204,15 @@ Concrete choices the code now embodies. Change the doc first if you change them.
   `NNN_reply.md`, `attempts/NNN/` (build.log, run.log, result.json), `best.cu`,
   `best.json`, `summary.json`. Tensor files are deleted after each evaluation unless
   `protocol.keep_tensors` is set. A run resumes from its ledger and scratchpad.
-- **Baseline**: the PyTorch reference timed with the same warmup, trials and L2 flush,
-  once per run. For fp32 GEMM that is cuBLAS SGEMM.
+- **Baseline**: the PyTorch reference timed with the same trials and L2 flush, at least
+  10 warmup launches, 2 rounds in each of 3 fresh processes; the fastest round's median
+  is the bar. Added after cuBLAS SGEMM was seen to run at either 0.34 or 0.37 ms
+  depending on the process (every round within a process agreed), while the candidate
+  held steady, which turned a real 3% win into an apparent 10%.
+- **Thinking tokens**: Claude 5 models think adaptively on hard prompts and those tokens
+  count against `max_output_tokens` (a 16k budget cut a reply off mid-code). The budget
+  defaults to 32k; thinking blocks, when returned, are saved as `prompts/NNN_thinking.md`
+  and the block types land in the attempt's usage record.
 - **Providers**: `anthropic`, `openai` (any OpenAI-compatible endpoint, untested),
   `mock` (a directory of reply files), `human` (prompt to a file, reply from a file).
 - **CLI**: `autokernel run|eval|prompt|describe|doctor`. `eval` runs one kernel file

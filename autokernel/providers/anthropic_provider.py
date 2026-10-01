@@ -40,12 +40,24 @@ class AnthropicProvider(Provider):
         elif self.temperature is not None:
             kwargs["temperature"] = self.temperature
         try:
-            resp = self.client.messages.create(**kwargs)
+            # Streaming is required by the SDK for large max_tokens; we only need the final message.
+            with self.client.messages.stream(**kwargs) as stream:
+                resp = stream.get_final_message()
         except anthropic.APIError as e:
             raise ProviderError(f"anthropic API error: {e}") from e
-        text = "".join(getattr(b, "text", "") for b in resp.content if getattr(b, "type", "") == "text")
+        text, thinking, kinds = [], [], []
+        for b in resp.content:
+            kind = getattr(b, "type", "")
+            kinds.append(kind)
+            if kind == "text":
+                text.append(b.text)
+            elif kind == "thinking":
+                thinking.append(getattr(b, "thinking", "") or "")
+            elif kind == "redacted_thinking":
+                thinking.append("[redacted thinking block]")
         u = resp.usage
         usage = Usage(input_tokens=u.input_tokens, output_tokens=u.output_tokens,
                       cache_read_tokens=getattr(u, "cache_read_input_tokens", 0) or 0,
                       cache_write_tokens=getattr(u, "cache_creation_input_tokens", 0) or 0)
-        return Reply(text=text, usage=usage, model=resp.model, stop_reason=resp.stop_reason)
+        return Reply(text="".join(text), usage=usage, model=resp.model, stop_reason=resp.stop_reason,
+                     thinking="\n\n".join(t for t in thinking if t), block_types=kinds)

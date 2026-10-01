@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from autokernel.backends import make_backend
@@ -56,3 +58,14 @@ def test_target_description(tiny_problem):
     assert t["arch"].startswith("sm_") and t["sm_count"] > 0
     assert "SMs" in backend.target_text()
     assert "ak_kernel.h" in backend.contract_text()
+
+
+def test_relative_workdir(tiny_problem, naive_gemm_source, tmp_path, monkeypatch):
+    """The CLI uses relative run directories; subprocesses run with cwd=workdir."""
+    monkeypatch.chdir(tmp_path)
+    backend = make_backend(tiny_problem)
+    ref_fn = load_reference(tiny_problem)
+    a = evaluate_candidate(tiny_problem, backend, ref_fn, naive_gemm_source, Attempt(id=1, source_path="x.cu"),
+                           Path("runs") / "r1" / "attempts" / "001")
+    assert a.build_ok, a.build_diagnostics
+    assert a.verified

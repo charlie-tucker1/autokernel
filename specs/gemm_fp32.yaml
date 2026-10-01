@@ -40,4 +40,4 @@ feedback:
 model:
   provider: anthropic
   model: claude-sonnet-5
-  max_output_tokens: 16000
+  max_output_tokens: 32000

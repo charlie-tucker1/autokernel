@@ -101,7 +101,7 @@ class FeedbackSpec(BaseModel):
 class ModelSpec(BaseModel):
     provider: Literal["anthropic", "openai", "mock", "human"] = "anthropic"
     model: str = "claude-sonnet-5"
-    max_output_tokens: int = 16000
+    max_output_tokens: int = 32000  # shared with the model's thinking tokens
     temperature: Optional[float] = None
     thinking_budget: Optional[int] = None
     base_url: Optional[str] = None

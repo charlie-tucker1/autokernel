@@ -6,7 +6,7 @@ which keeps cost visible and lets any provider, including a human, take part."""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Optional
 
 
@@ -37,6 +37,8 @@ class Reply:
     usage: Usage
     model: str
     stop_reason: Optional[str] = None
+    thinking: str = ""                      # the model's thinking blocks, when the API returns them
+    block_types: list[str] = field(default_factory=list)
 
 
 class Provider(ABC):
