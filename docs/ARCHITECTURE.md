@@ -150,17 +150,22 @@ hash, protocol parameters. Errored attempts are recorded with `verified: false`.
 - `autokernel/providers`  anthropic, openai_compat, mock, human
 - `autokernel/backends`   cuda_cpp, triton
 - `autokernel/metrics`    nvml sidecar, ncu, ptxas parsing, doctor checks
-- `autokernel/cli.py`     `run`, `resume`, `doctor`
+- `autokernel/cli.py`     `run`, `eval`, `prompt`, `describe`, `export`, `doctor`
 - `harness/`              C++/CUDA evaluator process (CMake, own preset)
 - `specs/`                example specs, starting with fp32 GEMM
 - `tests/`                pytest; includes a suite of known cheats that must be caught
 - `runs/`                 output, git-ignored
+- `results/`              exported runs worth keeping, each with a `REPORT.md`; committed
 
 ## Milestones
 
 1. Done 2026-09-29. Greedy loop, `cuda_cpp` backend, fp32 GEMM, Anthropic provider,
-   tier-1 feedback, ledger and scratchpad. Runs end to end on a laptop (verified with
-   the mock provider; the Anthropic provider is wired but not yet exercised).
+   tier-1 feedback, ledger and scratchpad. First live run with Sonnet 5 on 2026-10-01
+   (`results/20261001-182415-gemm_fp32`): 1.02x cuBLAS SGEMM in five attempts.
+   Hardened the same day for runs of hundreds to thousands of attempts after a
+   mock-provider stress run (bounded prompt, duplicate detection, retries, artifact
+   cleanup, close-win confirmation, cached static prompt, `export`); see the
+   "Decisions" section.
 2. `triton` backend on the same spec; the shared protocol lives in one place.
 3. Anti-cheat hardening and the sandbox; the known-cheat test suite.
 4. NVML sidecar and the ncu tier; `doctor`.
@@ -215,10 +220,63 @@ Concrete choices the code now embodies. Change the doc first if you change them.
   and the block types land in the attempt's usage record.
 - **Providers**: `anthropic`, `openai` (any OpenAI-compatible endpoint, untested),
   `mock` (a directory of reply files), `human` (prompt to a file, reply from a file).
-- **CLI**: `autokernel run|eval|prompt|describe|doctor`. `eval` runs one kernel file
-  through the full protocol with no model, which is the plain benchmarker use.
+- **CLI**: `autokernel run|eval|prompt|describe|export|doctor`. `eval` runs one kernel
+  file through the full protocol with no model, which is the plain benchmarker use.
+
+## Decisions made for long runs (2026-10-01)
+
+A 100-iteration mock run (a cheap-model imitation: block-size variants, one broken
+build and one wrong result in ten, exact repeats, truncated replies, notes that keep
+growing) and a 250-iteration memory probe showed the evaluator and loop stable (no
+crashes, no leak: 1.3 GB RSS flat after warm-up) but the orchestration growing without
+bound: prompts +140 characters per attempt, 28 of 100 sources rebuilt and re-run
+although byte-identical, 0.95 MB of compiled library kept per attempt, one transient
+API error ending the run. These rules fix that:
+
+- **Prompt split**: the system prompt is the rules plus everything fixed for the run
+  (computation, reference, precision, target, contract, measurement, baseline) and is
+  marked cacheable; the user prompt is what moves (best source, latest source, notes,
+  digest, feedback). About 1.8k tokens of system prompt for the GEMM spec: above the
+  1,024-token minimum Sonnet and Opus need for a cache hit, below Haiku's 2,048.
+- **Bounded history digest**: best so far; the chain of improvements (last 12); counts
+  by outcome over everything older; one line each for the `feedback.older_window` (20)
+  attempts before the `feedback.recent_attempts` (5) shown in detail. A thousand more
+  attempts add almost nothing to it.
+- **Scratchpad cap**: `feedback.max_scratchpad_lines` (80) and `max_scratchpad_chars`
+  (8,000) are hard limits; the prompt asks for about 60 lines. Cut notes end with a
+  marker line and the next feedback says so.
+- **Duplicates**: a source whose SHA-256 matches an earlier evaluated attempt is not
+  built or run again; the original's measurements are copied, `duplicate_of` is set, it
+  is never kept, and the feedback says which attempt it repeats. Ties in `Ledger.best`
+  go to the earliest attempt, so a duplicate never displaces its original.
+- **Provider retries**: `ProviderError.retryable` marks transient failures (HTTP 408,
+  409, 429, 500, 502, 503, 504, 529 and connection errors, including dropped streams).
+  The loop retries those with waits doubling from 30 s to 10 min, `model.max_retries`
+  (6) times, about 25 minutes of outage; anything else stops the run, which `--resume`
+  continues. The attempt records how many retries its reply took.
+- **Build artifacts**: the compiled library is deleted after evaluation unless
+  `protocol.keep_build_artifacts`; the source and logs stay, and `best.cu` rebuilds in
+  under a second.
+- **Close-win confirmation**: a verified candidate that beats the best by less than
+  `protocol.confirm_margin` (0.03) is re-run back to back with the incumbent on a
+  second pair of seeds (`+500000`), and kept only if it wins again. `Ledger.best`
+  skips a challenger that failed this, so the prompt's "current best" and `best.cu`
+  agree. Guards against a win that is really the laptop GPU being cooler or
+  faster-clocked than when the incumbent was measured.
+- **Export**: `autokernel export runs/<id> --spec SPEC [--recheck] [--note TEXT]`
+  writes `results/<id>/`: `REPORT.md` from the ledger; `problem.json` with the
+  reference copied to `reference/` so it is a complete spec; ledger, scratchpad,
+  candidates, prompts (and thinking), per-attempt build logs and harness results,
+  `summary.json` with paths made relative; never `.so` or `.npy` files. `--recheck`
+  measures the best kernel and a fresh best-of-3 baseline on the current machine and
+  records them in `recheck.json`; the report puts that number first, since the in-run
+  baseline reflects whatever method was in force at the time. A plain re-export keeps
+  an earlier `recheck.json`.
 
 ## Open questions
+
+- The bubblewrap sandbox (milestone 3) is now the main gap for unattended long runs:
+  candidate host code runs with the user's privileges.
 
 - How much of the scratchpad the model may rewrite per step, and whether the system
   should append a locked "measured" line under each idea.

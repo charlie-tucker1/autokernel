@@ -1,7 +1,9 @@
 """Prompt assembly, reply parsing and tier-1 feedback text.
 
-The prompt is rebuilt from scratch every step from the problem, the target, the
-current best, the model's notes, the ledger digest and the latest feedback."""
+Two parts, rebuilt every step. The system prompt holds the rules and everything that
+is fixed for the run (computation, precision, target, contract, measurement, baseline),
+so a provider can cache it. The user prompt holds what changes: the current best, the
+model's notes, the ledger digest and the latest feedback."""
 
 from __future__ import annotations
 
@@ -14,7 +16,7 @@ from ..metrics.ptxas import resources_summary
 from ..spec.problem import Problem, TensorSpec
 from .types import Attempt, Candidate
 
-SYSTEM_PROMPT = """You are the kernel author inside autokernel, an automated search for fast, correct GPU kernels. Each turn you receive the computation to implement (reference PyTorch code and tensor shapes), the precision requirement, the target hardware, the candidate contract, how candidates are measured, your own notes from earlier turns, a summary of earlier attempts with their measured results, and detailed feedback on the most recent attempt. Each turn you produce exactly one new candidate.
+SYSTEM_PROMPT = """You are the kernel author inside autokernel, an automated search for fast, correct GPU kernels. The task is fixed for the whole run and is described below: the computation to implement (reference PyTorch code and tensor shapes), the precision requirement, the target hardware, the candidate contract and how candidates are measured. Each turn you receive your own notes from earlier turns, a summary of earlier attempts with their measured results, and detailed feedback on the most recent attempt. Each turn you produce exactly one new candidate.
 
 Rules:
 - You cannot run anything. The system compiles your candidate, runs it on fresh random inputs you never see, checks every output element against a hidden reference, and times it. Only measured results count. Never state numbers you were not given.
@@ -22,6 +24,7 @@ Rules:
 - Do not try to detect or game the measurement. Outputs are filled with NaN before every call, inputs differ between the correctness and timing runs, and the timing run's outputs are verified as well.
 - Prefer one deliberate change per attempt so the measured difference is attributable. When the current best is far from the baseline, larger structural changes are fine.
 - The candidate must be complete and self-contained. Partial files or diffs cannot be compiled.
+- A candidate identical to an earlier one is not measured again; its earlier result is repeated.
 
 Respond in exactly this format and nothing else:
 
@@ -30,7 +33,7 @@ One short paragraph: what you believe the current bottleneck is, what you are ch
 </hypothesis>
 
 <scratchpad>
-The complete new contents of your notes file; it replaces the previous one. Keep what stays useful: ideas tried with their measured outcome, ideas not yet tried, facts learned about this target and this problem. Stay under about 60 lines.
+The complete new contents of your notes file; it replaces the previous one. Keep what stays useful: ideas tried with their measured outcome, ideas not yet tried, facts learned about this target and this problem. Stay under about 60 lines; the system cuts anything past {notes_lines} lines or {notes_chars} characters.
 </scratchpad>
 
 ```{fence}
@@ -79,7 +82,8 @@ def tensor_table(tensors: list[TensorSpec], with_init: bool) -> str:
     return "\n".join(rows)
 
 
-def build_user_prompt(ctx: PromptContext) -> str:
+def static_sections(ctx: PromptContext) -> list[str]:
+    """The parts of the prompt that do not change during a run."""
     P = ctx.problem
     c = P.computation
     parts: list[str] = []
@@ -118,8 +122,24 @@ def build_user_prompt(ctx: PromptContext) -> str:
         meas.append(P.goals.notes.strip())
     if ctx.baseline is not None:
         meas.append(f"- Baseline: the PyTorch reference measured the same way: {ctx.baseline.summary()}.")
+    if P.protocol.confirm_margin > 0:
+        meas.append(f"- A candidate that beats the current best by less than {100 * P.protocol.confirm_margin:.0f}% is "
+                    "re-run back to back against it on fresh inputs and kept only if it still wins.")
     parts.append("\n".join(meas))
+    return parts
 
+
+def build_system_prompt(ctx: PromptContext) -> str:
+    fb = ctx.problem.feedback
+    rules = (SYSTEM_PROMPT.replace("{fence}", ctx.fence)
+             .replace("{notes_lines}", str(fb.max_scratchpad_lines))
+             .replace("{notes_chars}", f"{fb.max_scratchpad_chars:,}"))
+    return rules + "\n\n# The task\n\n" + "\n\n".join(static_sections(ctx))
+
+
+def build_user_prompt(ctx: PromptContext) -> str:
+    """The per-step part: current best, notes, history, feedback."""
+    parts: list[str] = []
     if ctx.best is not None and ctx.best_source:
         parts.append(f"# Current best candidate: attempt #{ctx.best.id}, median {ctx.best.median_ms:.4f} ms"
                      + (f", {ctx.best.speedup_vs_baseline:.2f}x baseline" if ctx.best.speedup_vs_baseline else "")
@@ -201,6 +221,9 @@ def feedback_text(a: Attempt, problem: Problem, max_diag_lines: int = 40) -> str
     lines: list[str] = []
     if a.error:
         lines.append(f"Attempt failed before evaluation: {a.error}.")
+    if a.duplicate_of:
+        lines.append(f"This source is byte-for-byte identical to attempt #{a.duplicate_of}. Its result is repeated "
+                     "below; it was not run again. Submit something different.")
     if a.build_ok:
         lines.append(f"Build: OK in {a.build_seconds:.1f} s. {resources_summary(a.resources)}")
     elif a.source_path:
@@ -221,6 +244,11 @@ def feedback_text(a: Attempt, problem: Problem, max_diag_lines: int = 40) -> str
                 lines.append(f"Versus baseline: {a.speedup_vs_baseline:.3f}x (baseline median {a.baseline_median_ms:.4f} ms; above 1.0 means faster than the baseline).")
             if a.speedup_vs_best is not None:
                 lines.append(f"Versus previous best: {a.speedup_vs_best:.3f}x (best median {a.best_before_median_ms:.4f} ms).")
+        if a.confirmation:
+            c = a.confirmation
+            verdict = "it still won, so it is kept" if c.get("kept") else "it did not win again, so the previous best stays"
+            lines.append(f"Close win, so both were re-run back to back on fresh inputs: previous best "
+                         f"{c['incumbent_median_ms']:.4f} ms, this candidate {c['challenger_median_ms']:.4f} ms; {verdict}.")
         if a.verified:
             if a.kept:
                 lines.append("Result: verified. Kept as the new best.")
@@ -230,6 +258,10 @@ def feedback_text(a: Attempt, problem: Problem, max_diag_lines: int = 40) -> str
                 lines.append("Result: verified.")
         else:
             lines.append("Result: NOT verified. Speed does not count until every element of every output passes on both input sets.")
+    if a.scratchpad_truncated:
+        fb = problem.feedback
+        lines.append(f"Your notes went past the limit ({fb.max_scratchpad_lines} lines, {fb.max_scratchpad_chars:,} characters) "
+                     "and were cut; the tail is lost. Keep them shorter.")
     if a.stop_reason == "max_tokens":
         lines.append("Your previous reply hit the output token limit and was cut off. Be more concise: shorter notes and no text outside the required sections.")
     return "\n".join(lines) if lines else "No feedback recorded."

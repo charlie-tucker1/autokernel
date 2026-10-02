@@ -8,6 +8,9 @@ from typing import Optional
 
 from .base import Provider, ProviderError, Reply, Usage
 
+# Worth waiting for: rate limit, overloaded, server trouble. 4xx otherwise means the request is wrong.
+RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504, 529}
+
 
 class AnthropicProvider(Provider):
     name = "anthropic"
@@ -43,6 +46,11 @@ class AnthropicProvider(Provider):
             # Streaming is required by the SDK for large max_tokens; we only need the final message.
             with self.client.messages.stream(**kwargs) as stream:
                 resp = stream.get_final_message()
+        except anthropic.APIStatusError as e:
+            transient = e.status_code in RETRYABLE_STATUS
+            raise ProviderError(f"anthropic API error {e.status_code}: {e.message}", retryable=transient) from e
+        except anthropic.APIConnectionError as e:  # includes timeouts and dropped streams
+            raise ProviderError(f"anthropic connection error: {e}", retryable=True) from e
         except anthropic.APIError as e:
             raise ProviderError(f"anthropic API error: {e}") from e
         text, thinking, kinds = [], [], []

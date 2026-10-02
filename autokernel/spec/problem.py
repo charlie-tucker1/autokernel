@@ -90,18 +90,25 @@ class ProtocolSpec(BaseModel):
     run_timeout_s: float = 120.0
     seed: int = 0
     keep_tensors: bool = False
+    keep_build_artifacts: bool = False  # compiled libraries are deleted after evaluation unless set
+    confirm_margin: float = Field(default=0.03, description="a win over the best by less than this fraction is "
+                                  "re-run back to back against the incumbent; 0 disables")
 
 
 class FeedbackSpec(BaseModel):
     tier: int = 1
     max_diag_lines: int = 40
-    recent_attempts: int = 5
+    recent_attempts: int = 5          # attempts shown in detail in the history digest
+    older_window: int = 20            # attempts before those shown as one line each; the rest are counted
+    max_scratchpad_lines: int = 80    # hard cap on the model's notes; the prompt asks for about 60
+    max_scratchpad_chars: int = 8000
 
 
 class ModelSpec(BaseModel):
     provider: Literal["anthropic", "openai", "mock", "human"] = "anthropic"
     model: str = "claude-sonnet-5"
     max_output_tokens: int = 32000  # shared with the model's thinking tokens
+    max_retries: int = 6  # retries of a provider call after a retryable error (rate limit, overload, connection)
     temperature: Optional[float] = None
     thinking_budget: Optional[int] = None
     base_url: Optional[str] = None

@@ -5,6 +5,7 @@
                              build, run and verify one kernel file, no model involved
   autokernel prompt SPEC     print the prompt the model would get for attempt 1
   autokernel describe SPEC   print the target description
+  autokernel export RUN_DIR  copy a run's committable results to results/<run-id> with a REPORT.md
   autokernel doctor          what this machine can build, run and measure
 """
 
@@ -47,6 +48,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     d = sub.add_parser("describe", help="print the target description")
     _spec_args(d)
+
+    ex = sub.add_parser("export", help="copy a run's committable results to results/<run-id> and write a REPORT.md")
+    ex.add_argument("run_dir", help="the run directory, e.g. runs/20261001-182415-gemm_fp32")
+    ex.add_argument("--out", help="destination directory (default: results/<run-id>)")
+    ex.add_argument("--spec", help="the spec the run was started from; its reference file is copied so the "
+                                   "exported problem.json is a complete spec on its own")
+    ex.add_argument("--recheck", action="store_true",
+                    help="first re-measure the best kernel against a fresh baseline on this machine (needs --spec)")
+    ex.add_argument("--no-prompts", action="store_true", help="leave out prompts/ (every prompt, reply and thinking block)")
+    ex.add_argument("--note", default="", help="free text appended to the report")
+    ex.add_argument("--force", action="store_true", help="write into a destination that already has files")
 
     sub.add_parser("doctor", help="report what this machine can build, run and measure")
     return p
@@ -114,7 +126,7 @@ def cmd_eval(args: argparse.Namespace) -> int:
 
 def cmd_prompt(args: argparse.Namespace) -> int:
     from .backends import make_backend
-    from .search.prompt import SYSTEM_PROMPT, PromptContext, build_user_prompt
+    from .search.prompt import PromptContext, build_system_prompt, build_user_prompt
     from .search.scratchpad import DEFAULT
     from .spec.loader import load_problem
     from .spec.reference import load_reference, reference_source
@@ -127,8 +139,41 @@ def cmd_prompt(args: argparse.Namespace) -> int:
                         measurement_text=backend.measurement_text(problem), baseline=None,
                         best=None, best_source=None, latest=None, latest_source=None,
                         scratchpad=DEFAULT, digest="", feedback="", next_id=1)
-    print("SYSTEM:\n" + SYSTEM_PROMPT.replace("{fence}", backend.code_fence))
+    print("SYSTEM:\n" + build_system_prompt(ctx))
     print("\nUSER:\n" + build_user_prompt(ctx))
+    return 0
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    import json
+
+    from .search.export import export_run, recheck_best
+    from .spec.problem import Problem
+
+    run_dir = Path(args.run_dir)
+    if not (run_dir / "ledger.jsonl").is_file():
+        sys.exit(f"{run_dir} has no ledger.jsonl; is it a run directory?")
+    out = Path(args.out) if args.out else Path("results") / run_dir.resolve().name
+    if out.is_dir() and any(out.iterdir()) and not args.force:
+        sys.exit(f"{out} already has files; pass --force to write into it")
+    spec = Path(args.spec).resolve() if args.spec else None
+    recheck = None
+    if args.recheck:
+        if spec is None:
+            sys.exit("--recheck needs --spec so the reference implementation can be found")
+        best = next((p for p in run_dir.glob("best.*") if p.suffix in (".cu", ".py")), None)
+        if best is None:
+            sys.exit(f"{run_dir} has no best kernel to re-measure")
+        problem = Problem.model_validate(json.loads((run_dir / "problem.json").read_text()))
+        problem.spec_path = spec
+        workdir = run_dir / f"recheck-{datetime.now():%Y%m%d-%H%M%S}"
+        print(f"re-measuring {best.name} against a fresh baseline (work in {workdir})")
+        recheck = recheck_best(problem, best, workdir)
+        print(f"baseline {recheck['baseline']['summary']}")
+        print(f"best kernel {recheck['candidate']['summary']}; verified {recheck['candidate']['verified']}; "
+              f"speedup {recheck['speedup_vs_baseline'] or 0:.3f}x")
+    report = export_run(run_dir, out, spec=spec, include_prompts=not args.no_prompts, recheck=recheck, notes=args.note)
+    print(f"exported to {out}; report: {report}")
     return 0
 
 
@@ -150,7 +195,8 @@ def main(argv: list[str] | None = None) -> None:
     from .backends import BackendError
     from .providers import ProviderError
 
-    handler = {"run": cmd_run, "eval": cmd_eval, "prompt": cmd_prompt, "describe": cmd_describe}[args.cmd]
+    handler = {"run": cmd_run, "eval": cmd_eval, "prompt": cmd_prompt, "describe": cmd_describe,
+               "export": cmd_export}[args.cmd]
     try:
         sys.exit(handler(args))
     except (BackendError, ProviderError, FileNotFoundError) as e:

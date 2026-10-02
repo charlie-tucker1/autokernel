@@ -11,7 +11,13 @@ from typing import Optional
 
 
 class ProviderError(RuntimeError):
-    """The provider cannot continue (no key, out of canned replies, API failure)."""
+    """The provider cannot continue (no key, out of canned replies, API failure).
+    `retryable` marks transient failures (rate limit, overload, connection) that the
+    search loop may retry after a backoff; everything else stops the run."""
+
+    def __init__(self, message: str, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
 
 
 @dataclass

@@ -28,6 +28,7 @@ class Attempt(BaseModel):
     hypothesis: str = ""
     source_path: Optional[str] = None
     source_sha256: Optional[str] = None
+    duplicate_of: Optional[int] = None  # same source as this earlier attempt; its result was copied, not re-run
     error: str = ""  # orchestrator-level failure: no code in reply, provider trouble
 
     build_ok: bool = False
@@ -52,8 +53,11 @@ class Attempt(BaseModel):
     best_before_median_ms: Optional[float] = None
     speedup_vs_best: Optional[float] = None
     kept: bool = False
+    confirmation: Optional[dict] = None  # back-to-back re-run of a close win: incumbent and challenger medians, verdict
 
     usage: dict = Field(default_factory=dict)
+    retries: int = 0  # provider calls that failed with a retryable error before this reply
+    scratchpad_truncated: bool = False
     stop_reason: Optional[str] = None
     seeds: dict = Field(default_factory=dict)
     protocol: dict = Field(default_factory=dict)
