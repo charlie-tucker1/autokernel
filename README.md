@@ -5,7 +5,7 @@ nothing the model says. You give it a computation, a precision requirement, a ha
 target, a language, an objective and a budget; it iterates and hands back the best
 kernel it found with measured numbers against a named baseline.
 
-Design: `docs/ARCHITECTURE.md`. Read that first.
+Design: `docs/ARCHITECTURE.md`. 
 
 ## Layout
 
